@@ -1,77 +1,84 @@
 #include <map> 
 #include <math.h>
+#include <opencv4/opencv2/core/matx.hpp>
+#include <opencv4/opencv2/core/types.hpp>
+#include <opencv4/opencv2/imgcodecs.hpp>
+#include "opencv4/opencv2/highgui.hpp"
+#include "iostream"
+#include "numeric"
 
 using namespace std;
 
 const int MAX_DISTANCE = 4;
 const int DISTANCE_DIFFERENCE_THRESHOLD = 2;
 
-struct Pixel { pair<int, int> coords; float value; };
+typedef pair<int, int> point_t ;
 
-static float distance(pair<int, int> x, pair<int, int> y) {
-    return sqrt(pow(x.first - y.first, 2) + pow(x.second - y.second, 2));
+static point_t zero = make_pair(0, 0);
+
+static float distance(point_t a, point_t b) {
+    return sqrt(pow(a.first - b.first, 2) + pow(a.second - b.second, 2));
 }
 
-struct RecoveryContext {
-    float **image;     
-    int size_x;
-    int size_y;
-    map<pair<int, int>, float> recover_pixels;
+struct RecoveryParams
+{
+    point_t self;
+    point_t neighboors[4];    
 };
 
-static Pixel get_closest(const RecoveryContext& ctx,
-                                int deep,
-                                pair<int, int> coords,
-                                pair<int, int> step(pair<int, int>),
-                                bool is_healthy(float)) {
-    Pixel zero = {pair<int, int>{0, 0}, 0};
+struct RecoveryContext
+{
+    const cv::Mat &img;
+    vector<RecoveryParams> &recover_params;
+};
 
+static point_t get_closest(const RecoveryContext &ctx,
+                                int deep,
+                                point_t coords,
+                                point_t step(point_t),
+                                bool is_healthy(uchar)) {
     if (deep > MAX_DISTANCE)
         return zero;
 
     auto next = step(coords);
-    if (next.first < 0 || next.first >= ctx.size_x)
+    
+    // вышел за границу
+    if (next.first < 0 || next.first >= ctx.img.rows || next.second < 0 || next.second >= ctx.img.cols)
         return zero;
 
-    if (next.second < 0 || next.second >= ctx.size_y)
-        return zero;
-
-    auto value = ctx.image[next.first][next.second];   
+    auto value = ctx.img.at<uchar>(next.first, next.second);   
     if (is_healthy(value))
-        return Pixel {next, value};
+        return next;
     
     return get_closest(ctx, deep + 1, next, step, is_healthy);
 }
 
-static pair<int, int> x1_step(pair<int, int> coords) { return pair<int, int>{ coords.first - 1, coords.second }; }
-static pair<int, int> x2_step(pair<int, int> coords) { return pair<int, int>{ coords.first + 1, coords.second }; }
-static pair<int, int> y1_step(pair<int, int> coords) { return pair<int, int>{ coords.first, coords.second + 1 }; }
-static pair<int, int> y2_step(pair<int, int> coords) { return pair<int, int>{ coords.first, coords.second - 1 }; }
+static point_t x1_step(point_t coords) { return { coords.first - 1, coords.second }; }
+static point_t x2_step(point_t coords) { return { coords.first + 1, coords.second }; }
+static point_t y1_step(point_t coords) { return { coords.first, coords.second + 1 }; }
+static point_t y2_step(point_t coords) { return { coords.first, coords.second - 1 }; }
 
-static pair<int, int> d1_step(pair<int, int> coords) { return pair<int, int>{ coords.first - 1, coords.second + 1 }; }
-static pair<int, int> d2_step(pair<int, int> coords) { return pair<int, int>{ coords.first + 1, coords.second + 1 }; }
-static pair<int, int> d3_step(pair<int, int> coords) { return pair<int, int>{ coords.first - 1, coords.second + 1 }; }
-static pair<int, int> d4_step(pair<int, int> coords) { return pair<int, int>{ coords.first + 1, coords.second - 1 }; }
+static point_t d1_step(point_t coords) { return { coords.first - 1, coords.second + 1 }; }
+static point_t d2_step(point_t coords) { return { coords.first + 1, coords.second + 1 }; }
+static point_t d3_step(point_t coords) { return { coords.first - 1, coords.second + 1 }; }
+static point_t d4_step(point_t coords) { return { coords.first + 1, coords.second - 1 }; }
 
-static float calc_average_value(pair<int, int> coords, const Pixel& x1, const Pixel& x2,
-                                    const Pixel& y1, const Pixel& y2) {
-    auto dx1 = distance(x1.coords, coords);
-    auto dx2 = distance(x2.coords, coords);
-    auto dy1 = distance(y1.coords, coords);
-    auto dy2 = distance(y2.coords, coords);
+static void make_interpol_line(const RecoveryContext& ctx,
+                            point_t p[2],
+                            bool is_healthy(uchar),
+                            point_t self,
+                            point_t dir1_step(point_t),
+                            point_t dir2_step(point_t)) {
+    p[0] = get_closest(ctx, 0, self, dir1_step, is_healthy); 
+    p[1] = get_closest(ctx, 0, self, dir2_step, is_healthy); 
     
-    auto vx =
-         (dx1 - dx2) <= DISTANCE_DIFFERENCE_THRESHOLD ? (dx2 - dx1) <= DISTANCE_DIFFERENCE_THRESHOLD 
-       ? (dx1 * x1.value + dx2 * x2.value) / (dx1 + dx2) : x2.value
-       : x1.value;
+    auto dp1 = distance(p[0], self);
+    auto dp2 = distance(p[1], self);
     
-    auto vy =
-         (dy1 - dy2) <= DISTANCE_DIFFERENCE_THRESHOLD ? (dy2 - dy1) <= DISTANCE_DIFFERENCE_THRESHOLD 
-       ? (dy1 * y1.value + dy2 * y2.value) / (dy1 + dy2) : y2.value 
-       : y1.value;
-
-    return 0.5 * (vx + vy);
-}
+    if (abs(dp1 - dp2) > DISTANCE_DIFFERENCE_THRESHOLD) {
+        if (dp1 > dp2) p[0] = zero; else p[1] = zero; 
+    } 
+}   
 
 /* --------------------------------
  * |d1            |y1           d2|
@@ -86,34 +93,79 @@ static float calc_average_value(pair<int, int> coords, const Pixel& x1, const Pi
  * |--------------|---------------|
  */
 
-static float recover_pixel(const RecoveryContext& ctx, bool is_healthy(float), pair<int, int> coords) {
-    auto x1 = get_closest(ctx, 0, coords, x1_step, is_healthy); 
-    auto x2 = get_closest(ctx, 0, coords, x2_step, is_healthy); 
-    auto y1 = get_closest(ctx, 0, coords, y1_step, is_healthy); 
-    auto y2 = get_closest(ctx, 0, coords, y2_step, is_healthy); 
+static void make_recovery_params(const RecoveryContext& ctx, bool is_healthy(uchar), point_t self) {
+    // x - y neighboors
+    auto x_line = new point_t[2];
+    make_interpol_line(ctx, x_line, is_healthy, self, x1_step, x2_step);
+
+    auto y_line = new point_t[2];
+    make_interpol_line(ctx, y_line, is_healthy, self, y1_step, y2_step);
     
-    if (!x1.value && !x2.value && !y1.value && !y2.value) {
-        auto d1 = get_closest(ctx, 0, coords, d1_step, is_healthy); 
-        auto d2 = get_closest(ctx, 0, coords, d2_step, is_healthy); 
-        auto d3 = get_closest(ctx, 0, coords, d3_step, is_healthy); 
-        auto d4 = get_closest(ctx, 0, coords, d4_step, is_healthy); 
-        
-        return calc_average_value(coords, d1, d2, d3, d4);
+    if ((x_line[0] != zero && x_line[1] != zero) // найдена горизонтальная линия интерполяции
+     || (y_line[0] != zero && y_line[1] != zero))// найдена вертикальная линия интерполяции 
+    {
+        ctx.recover_params.push_back(RecoveryParams {self, } 
+        return;
     }
-    else
-        return calc_average_value(coords, x1, x2, y1, y2);
 } 
 
-RecoveryContext& check_pixel(RecoveryContext& ctx, const Pixel& pix, bool is_healthy_pixel(float)) {
-    if (is_healthy_pixel(pix.value)) {
-        return ctx;
-    }
-    else {
-        auto recover_value = recover_pixel(ctx, is_healthy_pixel, pix.coords); 
-        ctx.recover_pixels.insert({pix.coords, recover_value});
-    } 
-    return ctx;    
+bool is_healthy(uchar pixel) { return (int)pixel < 155; } 
+
+void first_iteration(RecoveryContext ctx) {
+    for (int i = 0; i < ctx.img.rows; ++i) {
+        for (int j = 0; j < ctx.img.cols; ++j) {
+            auto pix = ctx.img.at<uchar>(i, j);
+            if (!is_healthy(pix)) {
+                auto coords = make_pair(i, j);
+                auto recover_value = recover_pixel(ctx, is_healthy, coords); 
+                ctx.recovered->insert(make_pair(coords, recover_value));
+            } 
+        }
+    }    
+    
+    for (pair<point_t, uchar> pixel: *ctx.recovered) {
+        auto coords = pixel.first;
+        auto recover_value = pixel.second; 
+        ctx.img.at<uchar>(coords.first, coords.second) = recover_value;
+    }   
 }
 
+void second_iteration(RecoveryContext ctx) {
+    for (pair<point_t, uchar> pixel: *ctx.recovered) {
+        auto coords = pixel.first;
+        auto intensity = ctx.img.at<uchar>(coords.first, coords.second);
+        if (!is_healthy(intensity)) {
+            auto recovered = recover_pixel(ctx, is_healthy, coords); 
+            ctx.img.at<uchar>(coords.first, coords.second) = recovered;
+        } 
+    }
+}
 
+int main(int argc, char **argv) {
+    auto image = cv::imread(argv[1], cv::IMREAD_GRAYSCALE);
+    
+    if(!image.data) {
+        cout << "Could not open or find the image" << endl;
+        return -1;
+    }
+
+    auto *recovered_pixels = new map<point_t, uchar>;
+    RecoveryContext recovery_ctx = {image, recovered_pixels};
+
+    // восстанавливаем битые пиксели, используя соседние НЕ БИТЫЕ пиксели.
+    first_iteration(recovery_ctx); 
+    
+    /* проделываем ту же процедуру осреднения, что и в первый раз,
+     * но используем пиксели, которые были в прошлый раз битые, а теперь - нет.
+     */
+    second_iteration(recovery_ctx);
+    
+    cv::namedWindow("Display window 1");
+    cv::imshow("Display window 1", image);
+  
+    cv::waitKey(0); 
+    
+    delete(recovered_pixels);
+    return 0;
+}
 
