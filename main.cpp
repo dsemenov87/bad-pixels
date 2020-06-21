@@ -20,10 +20,15 @@ static float distance(point_t a, point_t b) {
     return sqrt(pow(a.first - b.first, 2) + pow(a.second - b.second, 2));
 }
 
+struct WeightPoint {
+    point_t coords;
+    float weight;
+};
+
 struct RecoveryParams
 {
     point_t self;
-    point_t neighboors[4];    
+    vector<WeightPoint> neighboors;
 };
 
 struct RecoveryContext
@@ -63,22 +68,34 @@ static point_t d2_step(point_t coords) { return { coords.first + 1, coords.secon
 static point_t d3_step(point_t coords) { return { coords.first - 1, coords.second + 1 }; }
 static point_t d4_step(point_t coords) { return { coords.first + 1, coords.second - 1 }; }
 
-static void make_interpol_line(const RecoveryContext& ctx,
-                            point_t p[2],
+static vector<WeightPoint> make_interpol_line(const RecoveryContext& ctx,
                             bool is_healthy(uchar),
                             point_t self,
                             point_t dir1_step(point_t),
                             point_t dir2_step(point_t)) {
-    p[0] = get_closest(ctx, 0, self, dir1_step, is_healthy); 
-    p[1] = get_closest(ctx, 0, self, dir2_step, is_healthy); 
+    auto p1 = get_closest(ctx, 0, self, dir1_step, is_healthy); 
+    auto p2 = get_closest(ctx, 0, self, dir2_step, is_healthy); 
+        
+    vector<WeightPoint> result;
     
-    auto dp1 = distance(p[0], self);
-    auto dp2 = distance(p[1], self);
+    auto dp1 = p1 == zero ? 0.0f : distance(p1, self);
+    auto dp2 = p2 == zero ? 0.0f : distance(p2, self);
     
     if (abs(dp1 - dp2) > DISTANCE_DIFFERENCE_THRESHOLD) {
-        if (dp1 > dp2) p[0] = zero; else p[1] = zero; 
+        if (dp1 > dp2) p1 = zero; else p2 = zero; 
     } 
+    
+    auto w1 = p1 == zero ? 0.0f : p2 == zero ? 0.5f : 0.5f * dp2 / (dp1 + dp2);
+    auto w2 = p2 == zero ? 0.0f : p1 == zero ? 0.5f : 0.5f * dp1 / (dp1 + dp2);
+ 
+    return vector<WeightPoint> { {p1, w1 }, {p2, w2 } };
 }   
+
+static bool is_line_complete(const vector<WeightPoint> &line) {
+    for (const WeightPoint &point : line)
+       if (point.coords == zero) return false; 
+    return true;
+}
 
 /* --------------------------------
  * |d1            |y1           d2|
@@ -94,51 +111,64 @@ static void make_interpol_line(const RecoveryContext& ctx,
  */
 
 static void make_recovery_params(const RecoveryContext& ctx, bool is_healthy(uchar), point_t self) {
-    // x - y neighboors
-    auto x_line = new point_t[2];
-    make_interpol_line(ctx, x_line, is_healthy, self, x1_step, x2_step);
-
-    auto y_line = new point_t[2];
-    make_interpol_line(ctx, y_line, is_healthy, self, y1_step, y2_step);
+    // horizontal - vertical neighboors
+    auto x_line = make_interpol_line(ctx, is_healthy, self, x1_step, x2_step);
+    auto y_line = make_interpol_line(ctx, is_healthy, self, y1_step, y2_step);
     
-    if ((x_line[0] != zero && x_line[1] != zero) // найдена горизонтальная линия интерполяции
-     || (y_line[0] != zero && y_line[1] != zero))// найдена вертикальная линия интерполяции 
+    RecoveryParams result;
+    result.self = self;
+    if (is_line_complete(x_line) && is_line_complete(y_line))
     {
-        ctx.recover_params.push_back(RecoveryParams {self, } 
+        result.neighboors.push_back(x_line.at(0));
+        result.neighboors.push_back(x_line.at(1));
+        result.neighboors.push_back(y_line.at(0));
+        result.neighboors.push_back(y_line.at(1));
+        ctx.recover_params.push_back(result); 
         return;
     }
+    
+    // diagonal neighboors
+    auto d12_line = make_interpol_line(ctx, is_healthy, self, d1_step, d2_step);
+    auto d34_line = make_interpol_line(ctx, is_healthy, self, d3_step, d4_step);
+    
+    if (is_line_complete(d12_line) && is_line_complete(d34_line))
+    {
+        result.neighboors.push_back(d12_line.at(0));
+        result.neighboors.push_back(d12_line.at(1));
+        result.neighboors.push_back(d34_line.at(0));
+        result.neighboors.push_back(d34_line.at(1));
+        ctx.recover_params.push_back(result); 
+        return;
+    }
+    
+    result.neighboors.push_back({x_line.at(0).coords, 1});
+    result.neighboors.push_back({x_line.at(1).coords, 1});
+    result.neighboors.push_back({y_line.at(0).coords, 1});
+    result.neighboors.push_back({y_line.at(1).coords, 1});
+    ctx.recover_params.push_back(result); 
 } 
 
-bool is_healthy(uchar pixel) { return (int)pixel < 155; } 
+static bool is_healthy(uchar pixel) { return (int)pixel < 155; } 
 
-void first_iteration(RecoveryContext ctx) {
+static void prepare_recovery(RecoveryContext &ctx) {
     for (int i = 0; i < ctx.img.rows; ++i) {
         for (int j = 0; j < ctx.img.cols; ++j) {
-            auto pix = ctx.img.at<uchar>(i, j);
-            if (!is_healthy(pix)) {
-                auto coords = make_pair(i, j);
-                auto recover_value = recover_pixel(ctx, is_healthy, coords); 
-                ctx.recovered->insert(make_pair(coords, recover_value));
+            auto intensity = ctx.img.at<uchar>(i, j);
+            if (!is_healthy(intensity)) {
+                make_recovery_params(ctx, is_healthy, make_pair(i, j)); 
             } 
         }
     }    
-    
-    for (pair<point_t, uchar> pixel: *ctx.recovered) {
-        auto coords = pixel.first;
-        auto recover_value = pixel.second; 
-        ctx.img.at<uchar>(coords.first, coords.second) = recover_value;
-    }   
 }
 
-void second_iteration(RecoveryContext ctx) {
-    for (pair<point_t, uchar> pixel: *ctx.recovered) {
-        auto coords = pixel.first;
-        auto intensity = ctx.img.at<uchar>(coords.first, coords.second);
-        if (!is_healthy(intensity)) {
-            auto recovered = recover_pixel(ctx, is_healthy, coords); 
-            ctx.img.at<uchar>(coords.first, coords.second) = recovered;
-        } 
-    }
+static void make_recovery(const vector<RecoveryParams> &recover_params, cv::Mat &img) {
+    for (RecoveryParams rp : recover_params) {
+        float approx_val = 0;
+        for (WeightPoint wp: rp.neighboors) {
+            approx_val += wp.weight * img.at<uchar>(wp.coords.first, wp.coords.second);
+        }
+        img.at<uchar>(rp.self.first, rp.self.second) = approx_val;
+    }   
 }
 
 int main(int argc, char **argv) {
@@ -149,23 +179,19 @@ int main(int argc, char **argv) {
         return -1;
     }
 
-    auto *recovered_pixels = new map<point_t, uchar>;
-    RecoveryContext recovery_ctx = {image, recovered_pixels};
+    auto *recovered_params = new vector<RecoveryParams>;
+    RecoveryContext recovery_ctx = {image, *recovered_params};
 
-    // восстанавливаем битые пиксели, используя соседние НЕ БИТЫЕ пиксели.
-    first_iteration(recovery_ctx); 
+    prepare_recovery(recovery_ctx); 
     
-    /* проделываем ту же процедуру осреднения, что и в первый раз,
-     * но используем пиксели, которые были в прошлый раз битые, а теперь - нет.
-     */
-    second_iteration(recovery_ctx);
+    make_recovery(*recovered_params, image);
     
     cv::namedWindow("Display window 1");
     cv::imshow("Display window 1", image);
   
     cv::waitKey(0); 
     
-    delete(recovered_pixels);
+    delete(recovered_params);
     return 0;
 }
 
