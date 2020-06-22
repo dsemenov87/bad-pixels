@@ -102,7 +102,7 @@ static bool is_line_complete(const vector<WeightPoint> &line) {
 }
 
 /* --------------------------------
- * |d1            |y1           d2|
+ * |d3            |y2           d4|
  * |              |               |
  * |              |               |
  * |              |               |
@@ -110,7 +110,7 @@ static bool is_line_complete(const vector<WeightPoint> &line) {
  * |x1            |             x2|
  * |              |               |
  * |              |               |
- * |d3            |y2           d4|
+ * |d1            |y1           d3|
  * |--------------|---------------|
  */
 
@@ -184,7 +184,6 @@ static pair<float, float> convert_to_opengl_display(point_t point, int x_size, i
 static pair<float, float> convert_to_opengl_texture(point_t point, int x_size, int y_size) {
     auto x = (point.second + 0.5f) / x_size;
     auto y = 1.0f - (point.first + 0.5f) / y_size;
-    cout << x << ", " << y << endl;
     return make_pair(x ,y);
 }
 
