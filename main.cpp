@@ -82,7 +82,11 @@ static vector<WeightPoint> make_interpol_line(const RecoveryContext& ctx,
     auto dp2 = p2 == zero ? 0.0f : distance(p2, self);
     
     if (abs(dp1 - dp2) > DISTANCE_DIFFERENCE_THRESHOLD) {
-        if (dp1 > dp2) p1 = zero; else p2 = zero; 
+        if (dp1 > dp2) {
+            p1 = zero;
+        }
+        else
+            p2 = zero; 
     } 
     
     auto w1 = p1 == zero ? 0.0f : p2 == zero ? 0.5f : 0.5f * dp2 / (dp1 + dp2);
@@ -171,6 +175,43 @@ static void make_recovery(const vector<RecoveryParams> &recover_params, cv::Mat 
     }   
 }
 
+static pair<float, float> convert_to_opengl_display(point_t point, int x_size, int y_size) {
+    auto x = (2.0f * (0.5f + point.second) / x_size) - 1.0f;
+    auto y = 1.0f - (2.0f * (0.5f + point.first) / y_size);
+    return make_pair(x ,y);
+}
+
+static pair<float, float> convert_to_opengl_texture(point_t point, int x_size, int y_size) {
+    auto x = (point.second + 0.5f) / x_size;
+    auto y = 1.0f - (point.first + 0.5f) / y_size;
+    cout << x << ", " << y << endl;
+    return make_pair(x ,y);
+}
+
+void get_pixel_recovery_params(const cv::Mat &image, vector<float*> &result) {
+    auto *recovered_params = new vector<RecoveryParams>;
+    RecoveryContext recovery_ctx = {image, *recovered_params};
+
+    prepare_recovery(recovery_ctx); 
+    
+    for (RecoveryParams rp : recovery_ctx.recover_params) {
+        float item[14];
+        auto p = convert_to_opengl_display(rp.self, image.cols, image.rows);
+        item[0] = p.first;
+        item[1] = p.second;
+        for (int i = 0; i < 12; i+=3) {
+            auto n = rp.neighboors.at(i / 3); 
+            p = convert_to_opengl_texture(n.coords, image.cols, image.rows);
+            item[i + 2] = p.first;
+            item[i + 3] = p.second;
+            item[i + 4] = n.weight;
+        }
+        result.push_back(item);
+    }   
+    
+    delete(recovered_params);
+}
+
 int main(int argc, char **argv) {
     auto image = cv::imread(argv[1], cv::IMREAD_GRAYSCALE);
     
@@ -185,13 +226,18 @@ int main(int argc, char **argv) {
     prepare_recovery(recovery_ctx); 
     
     make_recovery(*recovered_params, image);
-    
     cv::namedWindow("Display window 1");
     cv::imshow("Display window 1", image);
   
     cv::waitKey(0); 
-    
     delete(recovered_params);
+    
+    /*auto res = new vector<float*>;
+    get_pixel_recovery_params(image, *res);
+    for (auto item : *res) {
+        for (int i = 0; i < 4; i++)
+            cout << item[i] << ",";
+        cout << endl;      
+    }*/
     return 0;
 }
-
